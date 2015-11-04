@@ -6,7 +6,7 @@ import re
 import os
 import time
 
-board, thread = 'b', '618338975'
+board, thread = 'b', '643442947'
 
 def getPath(prefName, filetype):
 	path = prefName + '.' + filetype
@@ -23,6 +23,9 @@ for match in reg.finditer(page):
 	url, name, ftype = 'http:' + match.group(1), match.group(2), match.group(3)
 	
 	print("%s == %s.%s" % (url,name,ftype)) 
-	output = open(getPath(name, ftype), 'wb')
-	output.write(urllib2.urlopen(url).read())
-	output.close()
+	try:
+		output = open(getPath(name, ftype), 'wb')
+		output.write(urllib2.urlopen(url).read())
+		output.close()
+	except Exception, e:
+		print(str(e))
