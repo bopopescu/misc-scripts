@@ -2,6 +2,7 @@
 
 import RPi.GPIO as GPIO
 import time
+import urllib2
 GPIO.setmode(GPIO.BCM)
 
 
@@ -22,9 +23,16 @@ blue_led = 6
 
 time_stamp = time.time()
 
+def webGet(url):
+    response = urllib2.urlopen(url)
+    print response.info()
+    data = response.read()
+    print data
+    response.close()
+
 def bounce():
     global time_stamp
-    time_now = time.time()  
+    time_now = time.time()
     if (time_now - time_stamp) >= 0.3:
         time_stamp = time.time()
         return False
@@ -32,7 +40,7 @@ def bounce():
 
 def onLeftButton(channel):
     if not bounce():
-        print 'left'
+        webGet('http://localhost:8010/api/queue/new?name=' + 'Backup GIT')
 
 def onRightButton(channel):
     print 'right'
