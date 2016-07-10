@@ -2,7 +2,7 @@
 
 import RPi.GPIO as GPIO
 import time
-import urllib2
+import urllib2, urllib
 GPIO.setmode(GPIO.BCM)
 
 
@@ -40,7 +40,7 @@ def bounce():
 
 def onLeftButton(channel):
     if not bounce():
-        webGet('http://localhost:8010/api/queue/new?name=' + 'Backup GIT')
+        webGet('http://localhost:8010/api/queue/new?name=' + urllib.quote('Backup GIT'))
 
 def onRightButton(channel):
     print 'right'
