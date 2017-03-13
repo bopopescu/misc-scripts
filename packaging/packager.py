@@ -6,10 +6,7 @@ import shutil
 import pprint
 import stat
 from subprocess import call
-
-# USAGE: construct a class with required parameters
-# and call .package to generate the deliverable (ie: a .deb file).
-
+import make_ds_store
 
 CRED      = '\033[91m'
 CITALIC   = '\33[3m'
@@ -75,7 +72,10 @@ class Package(object):
               for momo in dirs:
                 os.chmod(os.path.join(root, momo), stat.S_IWUSR | stat.S_IXUSR | stat.S_IRUSR)
               for momo in files:
-                os.chmod(os.path.join(root, momo), stat.S_IWUSR | stat.S_IXUSR | stat.S_IRUSR)
+                try:
+                    os.chmod(os.path.join(root, momo), stat.S_IWUSR | stat.S_IXUSR | stat.S_IRUSR)
+                except Exception, e:
+                    self._log('WARN: Could not chmod() %s: %s', (momo, e))
             shutil.rmtree(self.temp_dir)
         self._log("Creating working dir: %s", self.temp_dir, action=True)
         mkdir_p(self.temp_dir)
@@ -116,6 +116,95 @@ class Package(object):
         print CBLUE2 + '\t' + content.replace('\n', '\n\t') + CEND
 
 
+class OSXPackage(Package):
+    plist_xml = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple Computer//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleGetInfoString</key>
+  <string>{bundle_info_string}</string>
+  <key>CFBundleExecutable</key>
+  <string>bin/{executable}</string>
+  <key>CFBundleIdentifier</key>
+  <string>{unique_identifier}</string>
+  <key>CFBundleName</key>
+  <string>{name}</string>
+  <key>CFBundleIconFile</key>
+  <string>{icon}</string>
+  <key>CFBundleVersion</key>
+  <string>{version}</string>
+  <key>CFBundleInfoDictionaryVersion</key>
+  <string>6.0</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+</dict>
+</plist>
+'''
+
+
+    def __init__(self, name, **kwargs):
+        super(OSXPackage, self).__init__(name, os.path.join('/tmp', name + '_osx'), **kwargs)
+        self.configuration_dir = kwargs.get('configuration_dir', '%s.app/Contents/configuration' % name)
+        self.binary_dir = kwargs.get('binary_dir', '%s.app/Contents/MacOS/bin' % name)
+        self.data_dir = kwargs.get('data_dir', '%s.app/Contents/Resources' % name)
+
+        self.bundleInfo = kwargs.get('bundle_info', 'twitchyliquid64 - Copyright (C) 2017')
+        self.executable = kwargs.get('executable', self.bin_files.values()[0])
+        self.unique_identifier = kwargs.get('unique_identifier', 'com.github.twitchyliquid64.' + name)
+        self.icon = kwargs.get('icon', name + ".png")
+
+    def package(self, version, config_path):
+        self.version = version
+        if config_path:
+            self.load_config(config_path)
+
+        self._setup_working_dir()
+        self._setup_package_dirs()
+        self._copy_data_and_bin_files()
+
+        self._make_plist_file()
+        self._make_icon(self.icon)
+        os.symlink('/Applications', os.path.join(self.temp_dir, 'Applications'))
+        self._make_ds_store()
+        return self._build()
+
+    def _construct_plist(self):
+        return OSXPackage.plist_xml.format(
+            version=self.version,
+            name=self.name,
+            bundle_info_string=self.bundleInfo,
+            executable=self.executable,
+            unique_identifier=self.unique_identifier,
+            icon=self.name + '.icns',
+        ).strip()
+
+    def _make_plist_file(self):
+        plist = self._construct_plist()
+        plist_path = os.path.join(self.temp_dir, '%s.app'% (self.name), 'Contents')
+        mkdir_p(plist_path)
+        self._log("\nWriting Info.plist file to %s", os.path.join(plist_path, 'Info.plist'), action=True)
+        self._log_block(plist)
+        with open(os.path.join(plist_path, 'Info.plist'), 'w') as outfile:
+            outfile.write(plist)
+
+    def _make_ds_store(self):
+        self._log("\nCreating DS_Store at:  %s", os.path.join(self.temp_dir, '.DS_Store'), action=True)
+        make_ds_store.Make(os.path.join(self.temp_dir, '.DS_Store'), {'%s.app' % self.name: (175, 90), 'Applications': (475,90)})
+
+    def _make_icon(self, icon):
+        dest = os.path.join(self.temp_dir, self.data_dir, self.name + '.icns')
+        self._log("\nConverting PNG to ICNS:  %s -> %s", (self.icon, dest), action=True)
+        call(['png2icns', dest, self.icon])
+        self._log("Also setting as the Volume icon.")
+        shutil.copyfile(dest, os.path.join(self.temp_dir, '.VolumeIcon.icns'))
+
+    def _build(self):
+        dmg_path = os.path.join(self.temp_dir, '%s.dmg'% (self.name))
+        call(['genisoimage', '-V', self.name, '-D', '-R', '-apple', '-no-pad', '-o', dmg_path, self.temp_dir])
+        return dmg_path
+
+
 class DebPackage(Package):
     def __init__(self, name, **kwargs):
         super(DebPackage, self).__init__(name, os.path.join('/tmp', name + '_deb'), **kwargs)
@@ -128,6 +217,11 @@ class DebPackage(Package):
         self.desktop_file = kwargs.get('desktop_file', None)
         self.desktop_file_path = kwargs.get('desktop_file_path', self.desktop_file)
         self.config_data = kwargs.get('config_data', {})
+
+        self.architecture = kwargs.get('arch', 'all')
+        self.postinst = kwargs.get('postinst', None)
+        self.depends = kwargs.get('depends', None)
+        self.sysv_script = kwargs.get('sysv_script', None)
 
     def package(self, version, config_path):
         self.version = version
@@ -143,12 +237,33 @@ class DebPackage(Package):
         self._make_control_file()
         self._construct_config_file()
 
+        if self.postinst:
+            self._copy_postinst()
+
+        if self.sysv_script:
+            self._copy_sysv_script()
+
         return self._build()
+
+    def _copy_sysv_script(self):
+        mkdir_p(os.path.join(self.temp_dir, 'etc/init.d'))
+        sysv_script_out_path = os.path.join(self.temp_dir, 'etc', 'init.d', self.name)
+        self._log("Apply service script: %s -> %s", (self.sysv_script, sysv_script_out_path), action=True)
+        shutil.copyfile(self.sysv_script, sysv_script_out_path)
+        os.chmod(sysv_script_out_path, stat.S_IWUSR | stat.S_IRUSR | stat.S_IRGRP| stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+
+    def _copy_postinst(self):
+        postinst_out_path = os.path.join(self.temp_dir, 'DEBIAN', 'postinst')
+        self._log("Apply postinst: %s -> %s", (self.postinst, postinst_out_path), action=True)
+        shutil.copyfile(self.postinst, postinst_out_path)
+        os.chmod(postinst_out_path, stat.S_IWUSR | stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
     def _construct_control_file(self):
         out  = 'Package: %s\n' % self.name
         out += 'Version: %s\n' % self.version
-        out += 'Architecture: all\n'
+        out += 'Architecture: %s\n' % self.architecture
+        if self.depends:
+            out += 'Depends: %s\n' % ','.join(self.depends)
         out += 'Maintainer: %s\n' % self.maintainer
         out += 'Description: %s\n' % self.description
         return out
@@ -181,7 +296,7 @@ class DebPackage(Package):
         conf = self.config_data
         self._log_object(conf)
         with open(os.path.join(self.temp_dir, self.configuration_dir, self.config_file_name), 'w') as outfile:
-            json.dump(conf, outfile)
+            json.dump(conf, outfile, sort_keys=True, indent=4, separators=(',', ': '))
             self._log("\t-> %s", os.path.join(self.temp_dir, self.configuration_dir, self.config_file_name), action=True)
 
     def _build(self):
